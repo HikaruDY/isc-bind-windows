@@ -1,0 +1,20 @@
+# Hey Emacs, this is -*- makefile-automake -*- file!
+# vim: filetype=automake
+
+unit-local: check
+
+TESTS = $(check_PROGRAMS)
+
+LOG_COMPILER = $(builddir)/../../unit-test-driver.sh
+
+AM_CFLAGS +=					\
+	$(TEST_CFLAGS)
+
+AM_CPPFLAGS +=					\
+	$(CMOCKA_CFLAGS)			\
+	-DNAMED_PLUGINDIR=\"$(pkglibdir)\"	\
+	-DSKIPPED_TEST_EXIT_CODE=77		\
+	-DTESTS_DIR=\"$(abs_srcdir)\"
+
+LDADD +=					\
+	$(CMOCKA_LIBS)

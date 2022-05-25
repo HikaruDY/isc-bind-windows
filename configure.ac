@@ -1,0 +1,1743 @@
+# Copyright (C) Internet Systems Consortium, Inc. ("ISC")
+#
+# SPDX-License-Identifier: MPL-2.0
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0.  If a copy of the MPL was not distributed with this
+# file, you can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# See the COPYRIGHT file distributed with this work for additional
+# information regarding copyright ownership.
+
+#
+# Defining the version in m4 requires a bit of dancing around,
+# so the strings are properly concatenated, as you can't use
+# a shell variable in AC_INIT
+#
+m4_define([bind_VERSION_MAJOR], 9)dnl
+m4_define([bind_VERSION_MINOR], 19)dnl
+m4_define([bind_VERSION_PATCH], 1)dnl
+m4_define([bind_VERSION_EXTRA], )dnl
+m4_define([bind_DESCRIPTION], [(Development Release)])dnl
+m4_define([bind_SRCID], [m4_esyscmd_s([git rev-parse --short HEAD | cut -b1-7])])dnl
+m4_define([bind_PKG_VERSION], [[bind_VERSION_MAJOR.bind_VERSION_MINOR.bind_VERSION_PATCH]bind_VERSION_EXTRA])dnl
+
+#
+# Autoconf initialization
+#
+AC_INIT([BIND], bind_PKG_VERSION, [https://gitlab.isc.org/isc-projects/bind9/-/issues/new?issuable_template=Bug], [], [https://www.isc.org/downloads/])
+AC_PREREQ([2.69])
+
+AC_DEFINE([PACKAGE_VERSION_MAJOR], ["][bind_VERSION_MAJOR]["], [BIND 9 Major part of the version])
+AC_DEFINE([PACKAGE_VERSION_MINOR], ["][bind_VERSION_MINOR]["], [BIND 9 Minor part of the version])
+AC_DEFINE([PACKAGE_VERSION_PATCH], ["][bind_VERSION_PATCH]["], [BIND 9 Patch part of the version])
+AC_DEFINE([PACKAGE_VERSION_EXTRA], ["][bind_VERSION_EXTRA]["], [BIND 9 Extra part of the version])
+AC_DEFINE([PACKAGE_DESCRIPTION], [m4_ifnblank(bind_DESCRIPTION, [" ]bind_DESCRIPTION["], [])], [An extra string to print after PACKAGE_STRING])
+AC_DEFINE([PACKAGE_SRCID], ["][bind_SRCID]["], [A short hash from git])
+
+bind_CONFIGARGS="${ac_configure_args:-default}"
+AC_DEFINE_UNQUOTED([PACKAGE_CONFIGARGS], ["$bind_CONFIGARGS"], [Either 'defaults' or used ./configure options])
+
+AC_DEFINE([PACKAGE_BUILDER], ["make"], [make or Visual Studio])
+
+#
+# Get the Canonical System Type
+#
+AC_CANONICAL_BUILD
+AC_CANONICAL_HOST
+AC_CANONICAL_TARGET
+
+AC_CONFIG_SRCDIR([bin/named/main.c])
+AM_INIT_AUTOMAKE([1.14 tar-pax foreign subdir-objects dist-xz no-dist-gzip -Wall -Werror])
+AM_SILENT_RULES([yes])
+AM_EXTRA_RECURSIVE_TARGETS([test unit doc])
+
+AC_CONFIG_HEADERS([config.h])
+AC_CONFIG_MACRO_DIR([m4])
+
+#
+# Enable maintainer mode by default only when building from git repository
+# and not cross compling
+#
+AS_IF([test "$cross_compiling" = no],
+      [AM_MAINTAINER_MODE(m4_ifset([bind_SRCID],[enable],[disable]))],
+      [AM_MAINTAINER_MODE([disable])])
+
+#
+# Enable system extensions to C and POSIX
+#
+AC_USE_SYSTEM_EXTENSIONS
+
+#
+# Compiler compatibility flags
+#
+m4_version_prereq([2.70],
+		  [AC_PROG_CC],
+		  [AC_PROG_CC_C99])
+AC_PROG_CPP_WERROR
+
+#
+# Find build compiler when cross compiling
+#
+AX_PROG_CC_FOR_BUILD
+
+#
+# Find the machine's endian flavor.
+#
+AC_C_BIGENDIAN
+
+#
+# Enable large file support
+#
+AC_SYS_LARGEFILE
+AC_FUNC_FSEEKO
+
+# Enable RFC 3542 APIs on macOS
+AC_DEFINE([__APPLE_USE_RFC_3542], [1], [Select RFC3542 IPv6 API on macOS])
+
+AC_PROG_MAKE_SET
+
+# Checks for programs.
+m4_ifdef([AM_PROG_AR], [AM_PROG_AR]) # call AM_PROG_AR only if available
+
+AC_PROG_INSTALL
+AC_PROG_LN_S
+AX_POSIX_SHELL
+AC_PROG_MKDIR_P
+
+# Initialize libtool
+LT_INIT([disable-static dlopen pic-only])
+
+AS_IF([test "$enable_static" != "no" && test "$enable_developer" != "yes"],
+      [AC_MSG_ERROR([Static linking is not supported as it disables dlopen() and certain security features (e.g. RELRO, ASLR)])])
+
+#
+# Set the default CFLAGS, CPPFLAGS, and LDFLAGS
+#
+STD_CFLAGS="-Wall -Wextra -Wwrite-strings -Wpointer-arith -Wno-missing-field-initializers -Wformat -Wshadow"
+
+# These should be always errors
+STD_CFLAGS="$STD_CFLAGS -Werror=implicit-function-declaration -Werror=missing-prototypes -Werror=format-security -Werror=parentheses -Werror=implicit -Werror=strict-prototypes -Werror=vla"
+
+STD_LDFLAGS=""
+
+# ... except in test code
+TEST_CFLAGS="-Wno-vla"
+
+# Fortify the sources by default
+STD_CPPFLAGS="-D_FORTIFY_SOURCE=2"
+
+#
+# Additional compiler settings.
+#
+AX_CHECK_COMPILE_FLAG([-fno-strict-aliasing],
+		      [STD_CFLAGS="$STD_CFLAGS -fno-strict-aliasing"])
+# Clang only issues a warning so use -Werror to force a error.
+AX_CHECK_COMPILE_FLAG([-Werror -fno-delete-null-pointer-checks],
+		      [STD_CFLAGS="$STD_CFLAGS -fno-delete-null-pointer-checks"])
+AX_CHECK_COMPILE_FLAG([-fdiagnostics-show-option],
+		      [STD_CFLAGS="$STD_CFLAGS -fdiagnostics-show-option"])
+
+AX_CHECK_LINK_FLAG([-Wl,--export-dynamic],
+		   [STD_LDFLAGS="$STD_LDFLAGS -Wl,--export-dynamic"])
+
+host_macos=no
+AS_CASE([$host],[*-darwin*],[host_macos=yes])
+AM_CONDITIONAL([HOST_MACOS], [test "$host_macos" = "yes"])
+
+#
+# Change defaults for developers if not explicity set.
+# Needs to be before the option is tested.
+#
+# [pairwise: --enable-developer, --disable-developer]
+AC_ARG_ENABLE([developer],
+	      [AS_HELP_STRING([--enable-developer],
+			      [enable developer build settings])])
+
+AS_IF([test "$enable_developer" = "yes"],
+      [DEVELOPER_MODE=yes
+       STD_CPPFLAGS="$STD_CPPFLAGS -DISC_MEM_DEFAULTFILL=1 -DISC_MEM_TRACKLINES=1 -DISC_LIST_CHECKINIT=1 -DISC_STATS_CHECKUNDERFLOW=1"
+       test "${enable_fixed_rrset+set}" = set || enable_fixed_rrset=yes
+       test "${enable_querytrace+set}" = set || enable_querytrace=yes
+       test "${with_cmocka+set}" = set || with_cmocka=yes
+       test "${with_zlib+set}" = set || with_zlib=yes
+       test "${enable_warn_error+set}" = set || enable_warn_error=yes
+       ])
+
+AC_SUBST([DEVELOPER_MODE])
+AC_SUBST([STD_CFLAGS])
+AC_SUBST([STD_CPPFLAGS])
+AC_SUBST([STD_LDFLAGS])
+AC_SUBST([TEST_CFLAGS])
+
+# [pairwise: --enable-warn-error, --disable-warn-error]
+AC_ARG_ENABLE([warn_error],
+	      [AS_HELP_STRING([--enable-warn-error],
+			      [turn on -Werror when compiling])],
+	      [],[enable_warn_error=no])
+AS_IF([test "$enable_warn_error" = "yes"],
+      [STD_CFLAGS="$STD_CFLAGS -Werror"])
+
+#
+# Use pkg-config
+#
+
+PKG_PROG_PKG_CONFIG
+AS_IF([test -z "$PKG_CONFIG"],
+      [AC_MSG_ERROR([The pkg-config script could not be found or is too old.])])
+
+# [pairwise: --enable-buffer-useinline, --disable-buffer-useinline]
+AC_ARG_ENABLE(buffer_useinline,
+	      AS_HELP_STRING([--enable-buffer-useinline],
+			     [define ISC_BUFFER_USEINLINE when compiling
+				[default=yes]]),
+	      if test yes = "${enable}"
+	      then
+		      AC_DEFINE([ISC_BUFFER_USEINLINE], [1],
+				[Define if you want to use inline buffers])
+	      fi,
+	      AC_DEFINE([ISC_BUFFER_USEINLINE], [1]))
+
+# Fuzzing is not included in pairwise testing as fuzzing tools are
+# not present in the relevant Docker image.
+#
+# [pairwise: skip]
+AC_ARG_ENABLE([fuzzing],
+	      [AS_HELP_STRING([--enable-fuzzing=<afl|libfuzzer|ossfuzz>],
+			      [Enable fuzzing using American Fuzzy Lop or libFuzzer (default=no)])],
+	      [],
+	      [enable_fuzzing=no])
+
+AC_MSG_CHECKING([whether to enable fuzzing mode])
+AS_CASE([$enable_fuzzing],
+	[no],[AC_MSG_RESULT([no])],
+	[afl],[
+	  AC_MSG_RESULT([using AFL])
+	  AC_DEFINE([ENABLE_AFL], [1],
+		    [Define to enable American Fuzzy Lop test harness])
+	  STD_CFLAGS="$STD_CFLAGS -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1"
+	  FUZZ_LOG_COMPILER="afl.sh"],
+	[libfuzzer],[
+	  AC_MSG_RESULT([using libFuzzer])
+	  STD_CFLAGS="$STD_CFLAGS -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1 -fsanitize=fuzzer-no-link,address,undefined"
+	  LDFLAGS="$LDFLAGS -fsanitize=address,undefined"
+	  FUZZ_LDFLAGS="-fsanitize=fuzzer,address,undefined"
+	  FUZZ_LOG_COMPILER="libfuzzer.sh"],
+	[ossfuzz],[
+	    AC_MSG_RESULT([using OSS-Fuzz])
+	    FUZZ_LDFLAGS="$LIB_FUZZING_ENGINE"],
+	[*],[AC_MSG_ERROR([You need to explicitly select the fuzzer])])
+AM_CONDITIONAL([HAVE_FUZZ_LOG_COMPILER], [test -n "$FUZZ_LOG_COMPILER"])
+AC_SUBST([FUZZ_LOG_COMPILER])
+AC_SUBST([FUZZ_LDFLAGS])
+
+AS_IF([test "$enable_fuzzing" = "afl"],
+      [AC_MSG_CHECKING("for AFL enabled compiler")
+       AC_COMPILE_IFELSE([AC_LANG_PROGRAM([],
+					  [#ifndef __AFL_COMPILER
+					   #error AFL compiler required
+					   #endif
+					  ])],
+			 [AC_MSG_RESULT([yes])],
+			 [AC_MSG_ERROR([set CC=afl-<gcc|clang> when --enable-fuzzing=afl is used])])
+      ])
+
+#
+# Perl is optional; it is used only by some of the system test scripts.
+#
+AC_PATH_PROGS([PERL], [perl5 perl])
+AC_SUBST([PERL])
+AM_CONDITIONAL([HAVE_PERL], [test -n "$PERL"])
+
+AX_PERL_MODULE([Digest::HMAC])
+AM_CONDITIONAL([HAVE_PERLMOD_DIGEST_HMAC],
+	       [test "$HAVE_PERLMOD_DIGEST__HMAC" = "yes"])
+
+AX_PERL_MODULE([File::Fetch])
+AM_CONDITIONAL([HAVE_PERLMOD_FILE_FETCH],
+	       [test "$HAVE_PERLMOD_FILE__FETCH" = "yes"])
+
+AX_PERL_MODULE([Net::DNS])
+AM_CONDITIONAL([HAVE_PERLMOD_NET_DNS],
+	       [test "$HAVE_PERLMOD_NET__DNS" = "yes"])
+
+AX_PERL_MODULE([Net::DNS::Nameserver])
+AM_CONDITIONAL([HAVE_PERLMOD_NET_DNS_NAMESERVER],
+	       [test "$HAVE_PERLMOD_NET__DNS__NAMESERVER" = "yes"])
+
+AX_PERL_MODULE([Time::HiRes])
+AM_CONDITIONAL([HAVE_PERLMOD_TIME_HIRES],
+	       [test "$HAVE_PERLMOD_TIME__HIRES" = "yes"])
+
+#
+# Python is optional, it is used only by some of the system test scripts.
+#
+AM_PATH_PYTHON([3.6], [], [:])
+AM_CONDITIONAL([HAVE_PYTHON], [test "$PYTHON" != ":"])
+
+AC_PATH_PROGS([PYTEST], [pytest-3 py.test-3 pytest py.test pytest-pypy], [])
+AS_IF([test -z "$PYTEST"],
+      [AC_MSG_WARN([pytest not found, some system tests will be skipped])])
+AC_SUBST([PYTEST])
+AM_CONDITIONAL([HAVE_PYTEST], [test -n "$PYTEST"])
+
+AX_PYTHON_MODULE([dns])
+AM_CONDITIONAL([HAVE_PYMOD_DNS], [test "$HAVE_PYMOD_DNS" = "yes"])
+
+#
+# xsltproc is optional, it is used only by system test scripts.
+#
+AC_PATH_PROG([XSLTPROC], [xsltproc])
+
+#
+# Using Solaris linker with gcc on Solaris breaks Thread Local Storage
+#
+AS_CASE([$host],
+	[*-solaris*],[
+	    AS_IF([test "$GCC" = "yes"],
+		  [LDFLAGS="$LDFLAGS -zrelax=transtls"
+		   AC_MSG_WARN([When using GNU C Compiler on Solaris, -zrelax=transtls linker flag is used to fix bug in Thread Local Storage])
+		  ])
+	])
+
+AC_CHECK_HEADERS([fcntl.h regex.h sys/time.h unistd.h sys/mman.h sys/sockio.h sys/select.h sys/param.h sys/sysctl.h net/if6.h sys/socket.h net/route.h linux/netlink.h linux/rtnetlink.h], [], [],
+		 [$ac_includes_default
+		  #ifdef HAVE_SYS_PARAM_H
+		  # include <sys/param.h>
+		  #endif
+		  #ifdef HAVE_SYS_SOCKET_H
+		  # include <sys/socket.h>
+		  #endif
+		 ])
+
+#
+# Check for thread local storage
+#
+AC_CHECK_HEADERS([threads.h])
+AX_TLS([AS_IF([test "$ac_cv_tls" != "thread_local"],
+	      [AC_DEFINE_UNQUOTED([thread_local], [$ac_cv_tls], [Define if the compiler uses a different keyword than thread_local for TLS variables])])],
+       [AC_MSG_ERROR([Thread Local Storage support required, update your toolchain to build BIND 9])])
+
+AC_C_CONST
+AC_C_INLINE
+AC_C_VOLATILE
+
+#
+# Check for yield support on ARM processors
+#
+AS_CASE([$host],
+	[arm*],
+	[AC_MSG_CHECKING([for yield instruction support])
+	 AC_COMPILE_IFELSE(
+	     [AC_LANG_PROGRAM([[]],
+			     [[__asm__ __volatile__ ("yield")]])],
+	     [AC_MSG_RESULT([yes])
+	      AC_DEFINE([HAVE_ARM_YIELD], [1],
+			[define if the ARM yield instruction is available])],
+	     [AC_MSG_RESULT([no])])])
+
+#
+# Check for pause support on SPARC processors
+#
+AS_CASE([$host],
+	[sparc*],
+	[AC_MSG_CHECKING([for pause instruction support])
+	 AC_COMPILE_IFELSE(
+	     [AC_LANG_PROGRAM([[]],
+			     [[__asm__ __volatile__ ("pause")]])],
+	     [AC_MSG_RESULT([yes])
+	      AC_DEFINE([HAVE_SPARC_PAUSE], [1],
+			[define if the SPARC pause instruction is available])],
+	     [AC_MSG_RESULT([no])])])
+
+AC_CHECK_FUNCS([sysctlbyname])
+
+#
+# Older versions of HP/UX don't define seteuid() and setegid()
+#
+AC_CHECK_FUNCS([seteuid setresuid])
+AC_CHECK_FUNCS([setegid setresgid])
+
+AC_TYPE_SIZE_T
+AC_TYPE_SSIZE_T
+AC_TYPE_UINTPTR_T
+
+#
+# check for uname library routine
+#
+AC_MSG_CHECKING([for uname])
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[#include <sys/utsname.h>
+       #include <stdio.h>
+      ]],
+     [[
+       struct utsname uts;
+       uname(&uts);
+       printf("running on %s %s %s for %s\n",
+	      uts.sysname, uts.release, uts.version, uts.machine);
+     ]])],
+  [AC_MSG_RESULT(yes)
+   AC_DEFINE([HAVE_UNAME], [1], [define if uname is available])
+  ],
+  [AC_MSG_RESULT(no)
+   AC_MSG_WARN([uname is not correctly supported])
+  ])
+
+#
+# check for GCC noreturn attribute
+#
+AX_GCC_FUNC_ATTRIBUTE([noreturn])
+
+#
+# check for GCC malloc attribute
+#
+AX_GCC_FUNC_ATTRIBUTE([malloc])
+
+AC_MSG_CHECKING([for extended malloc attributes])
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[
+       #include <stddef.h>
+       #include <stdlib.h>
+	   __attribute__ ((malloc, malloc (free, 1))
+	   void * xmalloc(size_t sz) { return malloc(sz); }
+     ]],
+     [[
+       void *p = xmalloc(8);
+	   free(p);
+     ]])],
+  [AC_MSG_RESULT(yes)
+   AC_DEFINE([HAVE_MALLOC_EXT_ATTR], [1], [define if extended attributes for malloc are available])
+  ],
+  [AC_MSG_RESULT(no)])
+
+#
+# check for GCC returns_nonnull attribute
+#
+AX_GCC_FUNC_ATTRIBUTE([returns_nonnull])
+
+#
+# check if we have kqueue
+#
+# [pairwise: --enable-kqueue, --disable-kqueue]
+AC_ARG_ENABLE([kqueue],
+	      [AS_HELP_STRING([--enable-kqueue],
+			      [use BSD kqueue when available [default=yes]])],
+	      [], enable_kqueue="yes")
+
+AS_IF([test "$enable_kqueue" = "yes"],
+      [AC_CHECK_FUNCS([kqueue])])
+
+#
+# check if we have epoll.  Linux kernel 2.4 has epoll_create() which fails,
+# so we need to try running the code, not just test its existence.
+#
+# [pairwise: --enable-epoll, --disable-epoll]
+AC_ARG_ENABLE([epoll],
+	      [AS_HELP_STRING([--enable-epoll],
+			      [use Linux epoll when available [default=auto]])],
+	      [], [enable_epoll="yes"])
+
+AS_IF([test "$enable_epoll" = "yes"],
+      [AC_CHECK_FUNCS([epoll_create1])])
+
+#
+# check if we support /dev/poll
+#
+# [pairwise: --enable-devpoll, --disable-devpoll]
+AC_ARG_ENABLE([devpoll],
+	      [AS_HELP_STRING([--enable-devpoll],
+			      [use /dev/poll when available [default=yes]])],
+	      [], [enable_devpoll="yes"])
+AS_IF([test "$enable_devpoll" = "yes"],
+      [AC_CHECK_HEADERS([sys/devpoll.h devpoll.h])])
+
+#
+# GeoIP support?
+#
+# Should be on by default if libmaxminddb exists.
+#
+# [pairwise: --enable-geoip --with-maxminddb=auto, --enable-geoip --with-maxminddb=yes, --disable-geoip]
+AC_ARG_ENABLE([geoip],
+	      [AS_HELP_STRING([--disable-geoip],
+			      [support GeoIP2 geolocation ACLs if available [default=yes]])],
+	      [], [enable_geoip="yes"])
+
+# [pairwise: skip]
+AC_ARG_WITH([maxminddb],
+	    [AS_HELP_STRING([--with-maxminddb=PATH],
+			    [Build with MaxMind GeoIP2 support (auto|yes|no|path) [default=auto]])],
+	    [], [with_maxminddb="auto"])
+
+AS_IF([test "$enable_geoip" = "yes"],
+      [AS_CASE([$with_maxminddb],
+	       [no],[AC_MSG_ERROR([Use '--disable-geoip' to disable the GeoIP])],
+	       [auto],[PKG_CHECK_MODULES([MAXMINDDB], [libmaxminddb],
+					 [AC_DEFINE([HAVE_GEOIP2], [1], [Build with GeoIP2 support])
+					  PKG_CHECK_VAR([MAXMINDDB_PREFIX], [libmaxminddb], [prefix], [], [AC_MSG_ERROR([libmaxminddb prefix not found in pkg-config; set MAXMINDDB_PREFIX in the environment])])
+					 ],[:])],
+	       [yes],[PKG_CHECK_MODULES([MAXMINDDB], [libmaxminddb],
+					[AC_DEFINE([HAVE_GEOIP2], [1], [Build with GeoIP2 support])
+					 PKG_CHECK_VAR([MAXMINDDB_PREFIX], [libmaxminddb], [prefix], [], [AC_MSG_ERROR([libmaxminddb prefix not found in pkg-config; set MAXMINDDB_PREFIX in the environment])])
+					])],
+	       [ # default
+		   AX_SAVE_FLAGS([maxminddb])
+		   MAXMINDDB_CFLAGS="-I$with_maxminddb/include"
+		   MAXMINDDB_LIBS="-L$with_maxminddb/lib"
+		   CFLAGS="$CFLAGS $MAXMINDDB_CFLAGS"
+		   LIBS="$LIBS $MAXMINDDB_LIBS"
+		   AC_SEARCH_LIBS([MMDB_open], [maxminddb],
+				  [AC_DEFINE([HAVE_GEOIP2], [1], [Build with GeoIP2 support])
+				   MAXMINDDB_LIBS="$MAXMINDDB_LIBS $ac_cv_search_MMDB_open"
+				   AC_MSG_NOTICE([GeoIP2 default database path set to $with_maxminddb/share/GeoIP])
+				   AS_VAR_COPY([MAXMINDDB_PREFIX], [$with_maxminddb])
+				  ],
+				  [AC_MSG_ERROR([GeoIP2 requested, but libmaxminddb not found])])
+		   AX_RESTORE_FLAGS([maxminddb])
+	       ])
+       AC_ARG_VAR([MAXMINDDB_PREFIX], [value of prefix for MAXMINDDB, overriding pkg-config])
+])
+
+AM_CONDITIONAL([HAVE_GEOIP2], [test -n "$MAXMINDDB_LIBS"])
+
+AC_SUBST([MAXMINDDB_CFLAGS])
+AC_SUBST([MAXMINDDB_LIBS])
+
+AX_PTHREAD
+
+LIBS="$PTHREAD_LIBS $LIBS"
+CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
+CC="$PTHREAD_CC"
+
+AC_CHECK_FUNCS([pthread_attr_getstacksize pthread_attr_setstacksize])
+
+# [pairwise: --with-locktype=adaptive, --with-locktype=standard]
+AC_ARG_WITH([locktype],
+	    AS_HELP_STRING([--with-locktype=ARG],
+			   [Specify mutex lock type
+			    (adaptive or standard)]),
+	    [], [with_locktype="adaptive"])
+
+AS_CASE([$with_locktype],
+	[adaptive],[
+	  AC_MSG_CHECKING([for PTHREAD_MUTEX_ADAPTIVE_NP])
+	  AC_COMPILE_IFELSE(
+	    [AC_LANG_PROGRAM(
+	       [[
+		 #ifndef _GNU_SOURCE
+		 #define _GNU_SOURCE
+		 #endif
+		 #include <pthread.h>
+	       ]],
+	       [[
+		 return (PTHREAD_MUTEX_ADAPTIVE_NP);
+	       ]]
+	     )],
+	    [AC_MSG_RESULT([using adaptive lock type])
+	     AC_DEFINE([HAVE_PTHREAD_MUTEX_ADAPTIVE_NP], 1,
+		       [Support for PTHREAD_MUTEX_ADAPTIVE_NP]) ],
+	    [AC_MSG_RESULT([using standard lock type])]
+	  )],
+	[standard],[AC_MSG_RESULT([using standard lock type])],
+	[AC_MSG_ERROR([You must specify "adaptive" or "standard" for --with-locktype.])]
+       )
+
+AC_CHECK_HEADERS([sched.h])
+
+AC_SEARCH_LIBS([sched_yield],[rt])
+AC_CHECK_FUNCS([sched_yield pthread_yield pthread_yield_np])
+
+# Look for functions relating to thread naming
+AC_CHECK_FUNCS([pthread_setname_np pthread_set_name_np])
+AC_CHECK_HEADERS([pthread_np.h], [], [], [#include <pthread.h>])
+
+# libuv
+AC_MSG_CHECKING([for libuv])
+PKG_CHECK_MODULES([LIBUV], [libuv >= 1.0.0], [],
+		  [AC_MSG_ERROR([libuv not found])])
+
+# libuv recvmmsg support
+AC_CHECK_DECLS([UV_UDP_MMSG_FREE, UV_UDP_MMSG_CHUNK], [], [], [[#include <uv.h>]])
+AC_MSG_CHECKING([whether struct msghdr uses padding for alignment])
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([#include <sys/socket.h>],
+				   [const struct msghdr h = { .__pad1 = 0, .__pad2 = 0 };])],
+		  [AC_MSG_RESULT([yes])
+		   AC_DEFINE([HAVE_DECL_UV_UDP_RECVMMSG],
+			     [0], [Disable recvmmsg support on systems with MUSL glibc])],
+		  [AC_MSG_RESULT([no])
+		   AC_CHECK_DECLS([UV_UDP_RECVMMSG], [], [], [[#include <uv.h>]])])
+
+# libuv recverr support
+AC_CHECK_DECLS([UV_UDP_LINUX_RECVERR], [], [], [[#include <uv.h>]])
+
+# [pairwise: --enable-doh --with-libnghttp2=auto, --enable-doh --with-libnghttp2=yes, --disable-doh]
+AC_ARG_ENABLE([doh],
+	      [AS_HELP_STRING([--disable-doh], [enable DNS over HTTPS, requires libnghttp2 (default=yes)])],
+	      [], [enable_doh=yes])
+
+# [pairwise: skip]
+AC_ARG_WITH([libnghttp2],
+	    [AS_HELP_STRING([--with-libnghttp2],
+			    [build with libnghttp2 library [yes|no|auto] (default is auto)])],
+	    [], [with_libnghttp2="auto"])
+
+AS_IF([test "$enable_doh" = "yes"],
+      [AS_CASE([$with_libnghttp2],
+	       [no],[AC_MSG_ERROR([Use '--disable-doh' to disable DNS-over-HTTPS support])],
+	       [auto|yes],[PKG_CHECK_MODULES([LIBNGHTTP2], [libnghttp2 >= 1.6.0],
+					     [AC_DEFINE([HAVE_LIBNGHTTP2], [1], [Build with DNS-over-HTTPS support])],
+					     [AC_MSG_ERROR(m4_normalize([DNS-over-HTTPS support requested, but libnghttp2 not found.
+									 Either install libnghttp2 or use --disable-doh.]))])],
+	       [AC_MSG_ERROR([Specifying libnghttp2 installation path is not supported, adjust PKG_CONFIG_PATH instead])])])
+
+AM_CONDITIONAL([HAVE_LIBNGHTTP2], [test -n "$LIBNGHTTP2_LIBS"])
+					  
+
+#
+# flockfile is usually provided by pthreads
+#
+AC_CHECK_FUNCS([flockfile getc_unlocked])
+
+#
+# Look for sysconf to allow detection of the number of processors.
+#
+AC_CHECK_FUNCS([sysconf])
+
+#
+# Do we want to use pthread rwlock?
+#
+# [pairwise: --enable-pthread-rwlock, --disable-pthread-rwlock]
+AC_ARG_ENABLE([pthread_rwlock],
+	      [AS_HELP_STRING([--enable-pthread-rwlock],
+			      [use pthread rwlock instead of internal rwlock implementation])],
+	      [], [enable_pthread_rwlock=no])
+
+AS_IF([test "$enable_pthread_rwlock" = "yes"],
+      [AC_CHECK_FUNCS([pthread_rwlock_rdlock], [],
+		      [AC_MSG_ERROR([pthread_rwlock_rdlock requested but not found])])
+       AC_DEFINE([USE_PTHREAD_RWLOCK],[1],[Define if you want to use pthread rwlock implementation])
+      ])
+
+CRYPTO=OpenSSL
+
+#
+# OpenSSL/LibreSSL is mandatory
+#
+PKG_CHECK_MODULES([OPENSSL], [libssl libcrypto], [],
+		  [AX_CHECK_OPENSSL([:],[AC_MSG_FAILURE([OpenSSL/LibreSSL not found])])])
+
+AX_SAVE_FLAGS([openssl])
+
+CFLAGS="$CFLAGS $OPENSSL_CFLAGS"
+LIBS="$LIBS $OPENSSL_LIBS"
+
+AC_MSG_CHECKING([for OpenSSL >= 1.0.0 or LibreSSL >= 2.7.0])
+AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[#include <openssl/opensslv.h>]],
+		     [[#if (!defined(LIBRESSL_VERSION_NUMBER) && (OPENSSL_VERSION_NUMBER < 0x1000000fL)) || \\
+			   (defined(LIBRESSL_VERSION_NUMBER) && (LIBRESSL_VERSION_NUMBER < 0x02070000fL))
+		       #error OpenSSL >= 1.0.0 or LibreSSL >= 2.7.0 required
+		       #endif
+		      ]])],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_FAILURE([not found])])
+
+#
+# Check for functions added in OpenSSL or LibreSSL
+#
+
+AC_CHECK_FUNCS([BIO_read_ex BIO_write_ex])
+AC_CHECK_FUNCS([BN_GENCB_new])
+AC_CHECK_FUNCS([CRYPTO_zalloc])
+AC_CHECK_FUNCS([ERR_get_error_all])
+AC_CHECK_FUNCS([EVP_CIPHER_CTX_new EVP_CIPHER_CTX_free])
+AC_CHECK_FUNCS([EVP_MD_CTX_new EVP_MD_CTX_free EVP_MD_CTX_reset EVP_MD_CTX_get0_md])
+AC_CHECK_FUNCS([EVP_PKEY_new_raw_private_key EVP_PKEY_eq])
+AC_CHECK_FUNCS([OPENSSL_init_ssl OPENSSL_init_crypto OPENSSL_cleanup])
+AC_CHECK_FUNCS([SSL_CTX_set_keylog_callback])
+AC_CHECK_FUNCS([SSL_CTX_set_min_proto_version])
+AC_CHECK_FUNCS([SSL_CTX_up_ref])
+AC_CHECK_FUNCS([SSL_read_ex SSL_peek_ex SSL_write_ex])
+AC_CHECK_FUNCS([SSL_CTX_set1_cert_store X509_STORE_up_ref])
+AC_CHECK_FUNCS([SSL_CTX_up_ref])
+
+#
+# Check for algorithm support in OpenSSL
+#
+
+AC_CHECK_FUNCS([EVP_DigestSignInit EVP_DigestVerifyInit], [:],
+	       [AC_MSG_FAILURE([EVP_DigestSignInit/EVP_DigestVerifyInit support in OpenSSL is mandatory.])])
+
+AC_MSG_CHECKING([for ECDSA P-256 support])
+AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[#include <openssl/evp.h>]],
+		     [[EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(NID_X9_62_prime256v1, NULL);]])],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_FAILURE([not found.  ECDSA P-256 support in OpenSSL is mandatory.])])
+
+AC_MSG_CHECKING([for ECDSA P-384 support])
+AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[#include <openssl/evp.h>]],
+		     [[EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(NID_secp384r1, NULL);]])],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_FAILURE([not found.  ECDSA P-384 support in OpenSSL is mandatory.])])
+
+AC_MSG_CHECKING([for Ed25519 support])
+AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[#include <openssl/evp.h>]],
+		     [[EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(NID_ED25519, NULL);]])],
+    [AC_DEFINE([HAVE_OPENSSL_ED25519], [1], [define if OpenSSL supports Ed25519])
+     AC_MSG_RESULT([yes])],
+    [AC_MSG_RESULT([no])])
+
+AC_MSG_CHECKING([for Ed448 support])
+AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[#include <openssl/evp.h>]],
+		     [[EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(NID_ED448, NULL);]])],
+    [AC_DEFINE([HAVE_OPENSSL_ED448], [1], [define if OpenSSL supports Ed448])
+     AC_MSG_RESULT([yes])],
+    [AC_MSG_RESULT([no])])
+
+#
+# Check for OpenSSL SHA-1 support
+#
+AC_CHECK_FUNCS([EVP_sha1], [:],
+	       [AC_MSG_FAILURE([SHA-1 support in OpenSSL is mandatory.])])
+
+#
+# Check for OpenSSL SHA-2 support
+#
+AC_CHECK_FUNCS([EVP_sha224 EVP_sha256 EVP_sha384 EVP_sha512], [:],
+	       [AC_MSG_FAILURE([SHA-2 support in OpenSSL is mandatory.])])
+
+#
+# Check for OpenSSL AES support
+#
+AC_CHECK_FUNCS([EVP_aes_128_ecb EVP_aes_192_ecb EVP_aes_256_ecb], [:],
+	       [AC_MSG_FAILURE([AES support in OpenSSL is mandatory.])])
+
+#
+# Check for OpenSSL 1.1.x/LibreSSL functions
+#
+AC_CHECK_FUNCS([DH_get0_key ECDSA_SIG_get0 RSA_set0_key EVP_PKEY_get0_EC_KEY])
+
+AC_CHECK_FUNCS([TLS_server_method TLS_client_method])
+
+#
+# Check whether FIPS mode is available and whether we should enable it
+#
+# FIPS is not included in pairwise testing as the relevant Docker image
+# does not support FIPS mode.
+#
+# [pairwise: skip]
+AC_ARG_ENABLE([fips-mode],
+	      [AS_HELP_STRING([--enable-fips-mode],
+			      [enable FIPS mode in OpenSSL library [default=no]])],
+	      [], [enable_fips_mode="no"])
+
+AC_MSG_CHECKING([whether to enable FIPS mode in OpenSSL library])
+AS_CASE([$enable_fips_mode],
+	[yes], [AC_MSG_RESULT([yes])
+		AC_CHECK_FUNCS([FIPS_mode],
+			       [], [AC_MSG_FAILURE([OpenSSL FIPS mode requested but not available.])])],
+	[no], [AC_MSG_RESULT([no])])
+
+AX_RESTORE_FLAGS([openssl])
+
+AC_SUBST([OPENSSL_CFLAGS])
+AC_SUBST([OPENSSL_LIBS])
+
+AC_CHECK_FUNCS([clock_gettime])
+
+# [pairwise: --with-gssapi=yes, --with-gssapi=auto, --without-gssapi]
+AC_ARG_WITH([gssapi],
+	    [AS_HELP_STRING([--with-gssapi=[PATH|[/path/]krb5-config]],
+			   [Specify path for system-supplied GSSAPI
+				[default=auto]])],
+	    [], [with_gssapi="auto"])
+
+KRB5_CONFIG=
+AS_CASE([$with_gssapi],
+	[no],[AC_MSG_CHECKING([for GSSAPI support])
+	      AC_MSG_RESULT([no])],
+	[yes],[AC_PATH_PROG([KRB5_CONFIG], [krb5-config])
+	       AS_IF([test -z "$KRB5_CONFIG"],
+		     [AC_MSG_ERROR([krb5-config required but not found])])],
+	[auto],[AC_PATH_PROG([KRB5_CONFIG], [krb5-config])],
+	[*krb5-config*],[KRB5_CONFIG="$with_gssapi"],
+	[AC_MSG_ERROR([--with-gssapi requires yes|no|auto|/path/to/krb5-config])])
+
+GSSAPI_CFLAGS=
+GSSAPI_LIBS=
+KRB5_CFLAGS=
+KRB5_LIBS=
+AS_IF([test -n "$KRB5_CONFIG"],
+      [AC_MSG_CHECKING([for gssapi libraries])
+       AX_SAVE_FLAGS([gssapi])
+       GSSAPI_CFLAGS=`"$KRB5_CONFIG" --cflags gssapi`
+       GSSAPI_LIBS=`"$KRB5_CONFIG" --libs gssapi`
+       CFLAGS="$CFLAGS $GSSAPI_CFLAGS"
+       LIBS="$LIBS $GSSAPI_LIBS"
+       AC_MSG_RESULT([$GSSAPI_CFLAGS $GSSAPI_LIBS])
+       AC_CHECK_HEADERS([gssapi/gssapi.h], [],
+			[AC_CHECK_HEADERS([gssapi.h], [],
+					  [AC_MSG_ERROR([neither gssapi/gssapi.h nor gssapi.h found])])])
+       AC_CHECK_HEADERS([gssapi/gssapi_krb5.h],
+			[AC_CHECK_HEADERS([gssapi_krb5.h], []
+					  [AC_MSG_ERROR([neither gssapi/gssapi_krb5.h nor gssapi_krb5.h found])])])
+       AC_CHECK_FUNCS([gss_acquire_cred],[],
+		      [AC_MSG_ERROR([linking with $GSSAPI_LIBS does not work])])
+       AX_RESTORE_FLAGS([gssapi])
+
+       AC_MSG_CHECKING([for krb5 libraries])
+       AX_SAVE_FLAGS([krb5])
+       KRB5_CFLAGS=`"$KRB5_CONFIG" --cflags krb5`
+       KRB5_LIBS=`$KRB5_CONFIG --libs krb5`
+       CFLAGS="$CFLAGS $KRB5_CFLAGS"
+       LIBS="$CFLAGS $KRB5_LIBS"
+       AC_MSG_RESULT([$KRB5_CFLAGS $KRB5_LIBS])
+       AC_CHECK_HEADERS([krb5/krb5.h], [],
+			[AC_CHECK_HEADERS([krb5.h], [],
+					  [AC_MSG_ERROR([neither krb5/krb5.h nor krb5 found])])])
+       AC_CHECK_FUNCS([krb5_init_context], [],
+		      [AC_MSG_ERROR([linking with $KRB5_LIBS failed])])
+       AX_RESTORE_FLAGS([krb5])
+
+       AC_DEFINE([HAVE_GSSAPI], [1], [Define to 1 if you have the Kerberos Framework available])
+       # kludge to silence compiler warnings which recommend use of GSS.framework on macOS
+       AS_CASE([$host],[*-darwin*],[CFLAGS="$CFLAGS -Wno-deprecated-declarations"])])
+AM_CONDITIONAL([HAVE_GSSAPI], [test -n "$GSSAPI_LIBS"])
+AC_SUBST([GSSAPI_CFLAGS])
+AC_SUBST([GSSAPI_LIBS])
+AC_SUBST([KRB5_CFLAGS])
+AC_SUBST([KRB5_LIBS])
+
+#
+# was --with-lmdb specified?
+#
+
+# [pairwise: --with-lmdb=auto, --with-lmdb=yes, --without-lmdb]
+AC_ARG_WITH([lmdb],
+	    [AS_HELP_STRING([--with-lmdb=@<:@PATH@:>@],
+			    [use LMDB library @<:@default=auto@:>@, optionally specify the prefix for lmdb library])],
+	    [:],
+	    [with_lmdb="auto"])
+
+ac_lib_lmdb_found=no
+AS_CASE([$with_lmdb],
+	[no],[],
+	[auto|yes], [PKG_CHECK_MODULES([LMDB], [lmdb],
+				       [ac_lib_lmdb_found=yes],
+				       [for ac_lib_lmdb_path in /usr /usr/local /opt /opt/local; do
+						AX_LIB_LMDB([$ac_lib_lmdb_path],
+							    [ac_lib_lmdb_found=yes
+							     break])
+					done
+				       ])],
+	[AX_LIB_LMDB([$with_lmdb],[ac_lib_lmdb_found=yes])])
+
+# don't fail when in automatic mode
+AS_IF([test "$with_lmdb" = "auto" && test "$ac_lib_lmdb_found" = "no"],
+      [with_lmdb=no])
+
+# hard fail when LMDB requested, but not found
+AS_IF([test "$with_lmdb" != "no" && test "$ac_lib_lmdb_found" != "yes"],
+      [AC_MSG_ERROR([LMDB requested, but not found])])
+
+AS_IF([test "$ac_lib_lmdb_found" = "yes"],
+      [AC_DEFINE([HAVE_LMDB], [1], [Use lmdb library])])
+
+AC_SUBST([LMDB_CFLAGS])
+AC_SUBST([LMDB_LIBS])
+AM_CONDITIONAL([HAVE_LMDB], [test -n "$LMDB_LIBS"])
+
+#
+# was --with-libxml2 specified?
+#
+# [pairwise: --with-libxml2=auto, --with-libxml2=yes, --without-libxml2]
+AC_ARG_WITH([libxml2],
+	    [AS_HELP_STRING([--with-libxml2],
+			    [build with libxml2 library [yes|no|auto] (default is auto)])],
+	    [], [with_libxml2="auto"])
+
+AS_CASE([$with_libxml2],
+	[no],[],
+	[auto],[PKG_CHECK_MODULES([LIBXML2], [libxml-2.0 >= 2.6.0],
+				  [AC_DEFINE([HAVE_LIBXML2], [1], [Use libxml2 library])],
+				  [:])],
+	[yes],[PKG_CHECK_MODULES([LIBXML2], [libxml-2.0 >= 2.6.0],
+				 [AC_DEFINE([HAVE_LIBXML2], [1], [Use libxml2 library])])],
+	[AC_MSG_ERROR([Specifying libxml2 installation path is not supported, adjust PKG_CONFIG_PATH instead])])
+
+AM_CONDITIONAL([HAVE_LIBXML2], [test -n "$LIBXML2_LIBS"])
+
+#
+# was --with-json-c specified?
+#
+# [pairwise: --with-json-c=detect, --with-json-c=yes, --without-json-c]
+AC_ARG_WITH([json-c],
+	    [AS_HELP_STRING([--with-json-c],
+			    [build with json-c library [yes|no|detect] (default is detect)])],
+	    [], [with_json_c="detect"])
+
+AS_CASE([$with_json_c],
+	[no],[],
+	[detect],[PKG_CHECK_MODULES([JSON_C], [json-c >= 0.11],
+				    [AC_DEFINE([HAVE_JSON_C], [1], [Use json-c library])],
+				    [:])],
+	[yes],[PKG_CHECK_MODULES([JSON_C], [json-c >= 0.11],
+				 [AC_DEFINE([HAVE_JSON_C], [1], [Use json-c library])])],
+	[AC_MSG_ERROR([Specifying json-c installation path is not supported, adjust PKG_CONFIG_PATH instead])]
+       )
+
+AM_CONDITIONAL([HAVE_JSON_C], [test -n "$JSON_C_LIBS"])
+
+AC_SUBST([JSON_C_CFLAGS])
+AC_SUBST([JSON_C_LIBS])
+
+#
+# was --with-zlib specified?
+#
+# [pairwise: --with-zlib=auto, --with-zlib=yes, --without-zlib]
+AC_ARG_WITH([zlib],
+	    [AS_HELP_STRING([--with-zlib],
+			    [build with zlib for HTTP compression
+			     [default=yes]])],
+	    [], with_zlib="auto")
+
+AS_CASE([$with_zlib],
+       [no],[],
+       [auto],[PKG_CHECK_MODULES([ZLIB], [zlib],
+				 [AC_DEFINE([HAVE_ZLIB], [1], [Use zlib library])],
+				 [:])],
+       [yes],[PKG_CHECK_MODULES([ZLIB], [zlib],
+				[AC_DEFINE([HAVE_ZLIB], [1], [Use zlib library])])],
+       [AC_MSG_ERROR([Specifying zlib installation path is not supported, adjust PKG_CONFIG_PATH instead])])
+AC_SUBST([ZLIB_CFLAGS])
+AC_SUBST([ZLIB_LIBS])
+
+#
+# Check if the system supports glibc-compatible backtrace() function.
+#
+AC_CHECK_HEADERS([execinfo.h],
+		 [AC_SEARCH_LIBS([backtrace_symbols], [execinfo],
+				 [AC_CHECK_FUNCS([backtrace_symbols])])])
+
+#
+# We do the IPv6 compilation checking after libtool so that we can put
+# the right suffix on the files.
+#
+AC_MSG_CHECKING([for IPv6 structures])
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[
+       #include <sys/types.h>
+       #include <sys/socket.h>
+       #include <netinet/in.h>
+     ]],
+     [[
+       struct sockaddr_in6 sin6;
+       struct in6_addr in6;
+       struct in6_pktinfo in6_pi;
+       struct sockaddr_storage storage;
+       in6 = in6addr_any;
+       in6 = in6addr_loopback;
+       sin6.sin6_scope_id = 0;
+       return (0);
+     ]])],
+  [AC_MSG_RESULT([yes])],
+  [AC_MSG_FAILURE([IPv6 support is mandatory])])
+
+#
+# Allow forcibly disabling TCP Fast Open support as autodetection might yield
+# confusing results on some systems (e.g. FreeBSD; see set_tcp_fastopen()
+# comment in lib/isc/socket.c).
+#
+# [pairwise: --enable-tcp-fastopen, --disable-tcp-fastopen]
+AC_ARG_ENABLE([tcp_fastopen],
+	      [AS_HELP_STRING([--disable-tcp-fastopen],
+			      [disable TCP Fast Open support [default=yes]])],
+	      [], [enable_tcp_fastopen="yes"])
+
+AS_IF([test "$enable_tcp_fastopen" = "yes"],
+      [AC_DEFINE([ENABLE_TCP_FASTOPEN], [1], [define if you want TCP_FASTOPEN enabled if available])])
+
+#
+# Check for some other useful functions that are not ever-present.
+#
+AC_CHECK_FUNCS([strlcpy strlcat])
+
+#
+# Check for readline support
+#
+
+# editline is not included in pairwise testing as the library
+# is not present in the relevant Docker image.
+#
+# GNU Readline is not included in pairwise testing as the library
+# in the relevant Docker image does not support pkg-config.
+#
+# [pairwise: --with-readline=auto, --with-readline=yes, --with-readline=libedit, --without-readline]
+AC_ARG_WITH([readline],
+	    [AS_HELP_STRING([--with-readline=yes|no|libedit|readline],
+			    [specify readline library [default auto]])],
+	    [], [with_readline="auto"])
+
+AS_CASE([$with_readline],
+	[no],[],
+	[auto|yes],
+	[PKG_CHECK_MODULES([READLINE], [libedit],
+			   [AC_DEFINE([HAVE_READLINE_LIBEDIT], [1], [Build with libedit support])],
+			   [PKG_CHECK_MODULES([READLINE], [libeditline],
+					      [AC_DEFINE([HAVE_READLINE_EDITLINE], [1], [Build with editline support.])],
+					      [PKG_CHECK_MODULES([READLINE], [readline],
+								 [AC_DEFINE([HAVE_READLINE_READLINE], [1], [Build with readline support.])],
+								 [AS_IF([test "$with_readline" = "yes"],
+									[AC_MSG_ERROR([readline support requested, but none of the libraries have been found.])])])])])],
+	[libedit],
+	[PKG_CHECK_MODULES([READLINE], [libedit],
+			   [AC_DEFINE([HAVE_READLINE_LIBEDIT], [1], [Build with libedit support])])],
+	[editline],
+	[PKG_CHECK_MODULES([READLINE], [libeditline],
+			   [AC_DEFINE([HAVE_READLINE_EDITLINE], [1], [Build with editline support])])],
+	[readline],
+	[PKG_CHECK_MODULES([READLINE], [readline],
+			   [AC_DEFINE([HAVE_READLINE_READLINE], [1], [Build with readline support])])],
+	[AC_MSG_ERROR([Unknown readline '$with_readline' library requested.])])
+AM_CONDITIONAL([HAVE_READLINE], [test -n "$READLINE_LIBS"])
+AC_SUBST([READLINE_CFLAGS])
+AC_SUBST([READLINE_LIBS])
+
+#
+# Security Stuff
+#
+# Note it is very recommended to *not* disable chroot(),
+# this is only because chroot() was made obsolete by Posix.
+#
+# [pairwise: --enable-chroot, --disable-chroot]
+AC_ARG_ENABLE(chroot, AS_HELP_STRING([--disable-chroot], [disable chroot]))
+case "$enable_chroot" in
+	yes|'')
+		AC_CHECK_FUNCS(chroot)
+		;;
+	no)
+		;;
+esac
+
+LIBCAP_LIBS=""
+AC_MSG_CHECKING([whether to enable Linux capabilities])
+
+# [pairwise: --enable-linux-caps, --disable-linux-caps]
+AC_ARG_ENABLE([linux-caps],
+	      [AS_HELP_STRING([--disable-linux-caps],
+			      [disable Linux capabilities])],
+	      [],
+	      [AS_CASE([$host],
+		       [*-linux*],[enable_linux_caps=yes],
+		       [enable_linux_caps=no])])
+
+AS_IF([test "$enable_linux_caps" = "yes"],
+      [AC_MSG_RESULT([yes])
+       AC_CHECK_HEADERS([sys/capability.h],
+			[],
+			[AC_MSG_ERROR(m4_normalize([sys/capability.h header is required for Linux capabilities support.
+						    Either install libcap or use --disable-linux-caps.]))])
+       AX_SAVE_FLAGS([cap])
+       AC_SEARCH_LIBS([cap_set_proc], [cap],
+		      [LIBCAP_LIBS="$ac_cv_search_cap_set_proc"],
+		      [AC_MSG_ERROR(m4_normalize([libcap is required for Linux capabilities support.
+						  Either install libcap or use --disable-linux-caps.]))])
+       AX_RESTORE_FLAGS([cap])],
+      [AC_MSG_RESULT([no])])
+AC_SUBST([LIBCAP_LIBS])
+
+case "$host" in
+*-solaris*)
+	AC_DEFINE(NEED_SECURE_DIRECTORY, 1,
+		  [Define if connect does not honour the permission on the UNIX domain socket.])
+	;;
+esac
+
+#
+# Time Zone Stuff
+#
+AC_CHECK_FUNCS([tzset])
+
+AC_MSG_CHECKING(for optarg declaration)
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[#include <unistd.h>]],
+     [[optarg = 0;]]
+   )],
+  [AC_MSG_RESULT(yes)],
+  [AC_MSG_RESULT(no)
+   GEN_NEED_OPTARG="-DNEED_OPTARG=1"
+   AC_DEFINE(NEED_OPTARG, 1, [Defined if extern char *optarg is not declared.])]
+)
+
+#
+# Check for nanoseconds in file stats
+#
+AC_MSG_CHECKING([for st_mtim.tv_nsec])
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[#include <sys/stat.h>]],
+     [[struct stat s;
+       return(s.st_mtim.tv_nsec);
+      ]])],
+  [AC_MSG_RESULT([yes])
+   AC_DEFINE([HAVE_STAT_NSEC], [1], [define if struct stat has st_mtim.tv_nsec field])],
+  [AC_MSG_RESULT([no])])
+
+#
+# Check for if_nametoindex() for IPv6 scoped addresses support
+#
+AC_CHECK_FUNCS([if_nametoindex])
+
+ISC_ATOMIC_LIBS=""
+AC_CHECK_HEADERS(
+  [stdatomic.h],
+  [AC_MSG_CHECKING([for memory model aware atomic operations])
+   AC_COMPILE_IFELSE(
+     [AC_LANG_PROGRAM(
+	[[#include <stdatomic.h>]],
+	[[atomic_int_fast32_t val = 0; atomic_fetch_add_explicit(&val, 1, memory_order_relaxed);]]
+      )],
+     [AC_MSG_RESULT([stdatomic.h])
+      AC_MSG_CHECKING([whether -latomic is needed for 64-bit stdatomic.h functions])
+      AC_LINK_IFELSE(
+	[AC_LANG_PROGRAM(
+	   [[#include <stdatomic.h>]],
+	   [[atomic_int_fast64_t val = 0; atomic_fetch_add_explicit(&val, 1, memory_order_relaxed);]]
+	 )],
+	[AC_MSG_RESULT([no])],
+	[ISC_ATOMIC_LIBS="-latomic"
+	 AX_SAVE_FLAGS([atomic])
+	 LIBS="$LIBS $ISC_ATOMIC_LIBS"
+	 AC_LINK_IFELSE(
+	   [AC_LANG_PROGRAM(
+	      [[#include <stdatomic.h>]],
+	      [[atomic_int_fast64_t val = 0; atomic_fetch_add_explicit(&val, 1, memory_order_relaxed);]]
+	    )],
+	   [AC_MSG_RESULT([yes])],
+	   [AC_MSG_FAILURE([libatomic needed, but linking with -latomic failed, please fix your toolchain.])])
+	 AX_RESTORE_FLAGS([atomic])
+	])
+     ],
+     [AC_MSG_FAILURE([stdatomic.h header found, but compilation failed, please fix your toolchain.])]
+   )],
+  [AC_MSG_CHECKING([for memory model aware atomic operations])
+   AC_COMPILE_IFELSE(
+     [AC_LANG_PROGRAM(
+	[[#include <inttypes.h>]],
+	[[int32_t val = 0; __atomic_fetch_add(&val, 1, __ATOMIC_RELAXED);]]
+      )],
+     [AC_MSG_RESULT([__atomic builtins])
+      AC_DEFINE([HAVE___ATOMIC], [1], [define if __atomic builtins are not available])
+      AC_MSG_CHECKING([whether -latomic is needed for 64-bit __atomic builtins])
+      AC_LINK_IFELSE(
+	[AC_LANG_PROGRAM(
+	   [[#include <inttypes.h>]],
+	   [[int64_t val = 0; __atomic_fetch_add(&val, 1, __ATOMIC_RELAXED);]]
+	 )],
+	[AC_MSG_RESULT([no])],
+	[ISC_ATOMIC_LIBS="-latomic"
+	 AX_SAVE_FLAGS([atomic])
+	 LIBS="$LIBS $ISC_ATOMIC_LIBS"
+	 AC_LINK_IFELSE(
+	   [AC_LANG_PROGRAM(
+	      [[#include <inttypes.h>]],
+	      [[int64_t val = 0; __atomic_fetch_add(&val, 1, __ATOMIC_RELAXED);]]
+	    )],
+	   [AC_MSG_RESULT([yes])],
+	   [AC_MSG_FAILURE([libatomic needed, but linking with -latomic failed, please fix your toolchain.])])
+	 AX_RESTORE_FLAGS([atomic])
+	])
+     ],
+     [AC_MSG_FAILURE([not found])
+     ])
+  ])
+LIBS="$LIBS $ISC_ATOMIC_LIBS"
+
+AC_CHECK_HEADERS([stdalign.h stdnoreturn.h])
+
+AC_CHECK_HEADERS([uchar.h])
+
+#
+# Check for __builtin_unreachable
+#
+AC_MSG_CHECKING([compiler support for __builtin_unreachable()])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[]],
+     [[__builtin_unreachable();]]
+   )],
+  [AC_MSG_RESULT([yes])
+   AC_DEFINE([HAVE_BUILTIN_UNREACHABLE], [1], [define if the compiler supports __builtin_unreachable().])
+  ],
+  [AC_MSG_RESULT([no])
+  ])
+
+#
+# Check for __builtin_clz
+#
+AC_MSG_CHECKING([compiler support for __builtin_clz])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[]],
+     [[return (__builtin_clz(0xff) == 24 ? 1 : 0);]]
+   )],
+  [AC_MSG_RESULT([yes])
+   AC_DEFINE(HAVE_BUILTIN_CLZ, 1, [Define to 1 if the compiler supports __builtin_clz.])
+  ],
+  [AC_MSG_RESULT([no])]
+)
+
+#
+# Check for __builtin_uadd_overflow
+#
+AC_MSG_CHECKING([compiler support for __builtin_*_overflow()])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[#include <limits.h>]],
+     [[return (__builtin_uadd_overflow(UINT_MAX, UINT_MAX, &(unsigned int){ 0 }));]]
+   )],
+  [AC_MSG_RESULT([yes])
+   AC_DEFINE([HAVE_BUILTIN_OVERFLOW], [1], [define if the compiler supports __builtin_*_overflow().])
+  ],
+  [AC_MSG_RESULT([no])
+  ])
+
+#
+# Activate "rrset-order fixed" or not?
+#
+# [pairwise: --enable-fixed-rrset, --disable-fixed-rrset]
+AC_ARG_ENABLE([fixed-rrset],
+	      [AS_HELP_STRING([--enable-fixed-rrset],
+			      [enable fixed rrset ordering [default=no]])],
+	      [], [enable_fixed_rrset="no"])
+AS_IF([test "$enable_fixed_rrset" = "yes"],
+      [AC_DEFINE([DNS_RDATASET_FIXED], [1],
+		 [Define to enable "rrset-order fixed" syntax.])])
+
+#
+# Activate dnstap?
+#
+# [pairwise: --enable-dnstap, --disable-dnstap]
+AC_ARG_ENABLE([dnstap],
+	      [AS_HELP_STRING([--enable-dnstap],
+			      [enable dnstap support
+			       (requires fstrm, protobuf-c)])],
+	      [], [enable_dnstap=no])
+
+AS_IF([test "$enable_dnstap" != "no"],
+      [PKG_CHECK_MODULES([DNSTAP], [libfstrm libprotobuf-c], [],
+			 [AC_MSG_FAILURE([Required libraries (fstrm, protobuf-c) were not found, please install them.])])
+       AC_PATH_PROG([FSTRM_CAPTURE], [fstrm_capture])
+       AC_PATH_PROG([PROTOC_C], [protoc-c])
+       AS_IF([test -z "$PROTOC_C"],
+	     [AC_MSG_ERROR([protoc-c compiler not found])])
+       AC_DEFINE([HAVE_DNSTAP], 1, [Define to 1 to enable dnstap support])
+      ])
+
+AC_SUBST([DNSTAP_CFLAGS])
+AC_SUBST([DNSTAP_LIBS])
+AM_CONDITIONAL([HAVE_DNSTAP], [test "$enable_dnstap" != "no"])
+#
+# The following sections deal with tools used for formatting
+# the documentation.  They are all optional, unless you are
+# a developer editing the documentation source.
+#
+
+#
+# Look for sphinx-build
+#
+AC_ARG_VAR([SPHINX_BUILD], [path to sphinx-build binary used to build the documentation])
+AC_PATH_PROG([SPHINX_BUILD], [sphinx-build], [:])
+AM_CONDITIONAL([HAVE_SPHINX_BUILD], [test "$SPHINX_BUILD" != ":"])
+
+AC_PATH_PROG([XELATEX], [xelatex], [:])
+AC_PATH_PROG([LATEXMK], [latexmk], [:])
+AM_CONDITIONAL([HAVE_XELATEX], [test "$XELATEX" != ":" && test "$LATEXMK" != ":"])
+
+#
+# Pull release date from CHANGES file last modification date
+# for reproducible builds
+#
+release_date=`date -u -r CHANGES +%Y-%m-%d`
+AC_SUBST([RELEASE_DATE], $release_date)
+
+#
+# Look for Doxygen
+#
+AC_PATH_PROGS([DOXYGEN], [doxygen])
+
+AC_CONFIG_FILES([doc/doxygen/doxygen-input-filter],
+		[chmod +x doc/doxygen/doxygen-input-filter])
+
+#
+# Look for curl
+#
+
+AC_PATH_PROG(CURL, curl, curl)
+AC_SUBST(CURL)
+
+#
+# Look for nc
+#
+
+AC_PATH_PROGS(NC, nc, nc)
+AC_SUBST(NC)
+
+#
+# IDN support using libidn2
+#
+
+LIBIDN2_CFLAGS=
+LIBIDN2_LIBS=
+
+# [pairwise: --with-libidn2=yes, --without-libidn2]
+AC_ARG_WITH([libidn2],
+	    [AS_HELP_STRING([--with-libidn2[=PATH]], [enable IDN support using GNU libidn2 [yes|no(default)|path]])],
+	    [with_libidn2="$withval"], [with_libidn2="no"])
+AS_CASE([$with_libidn2],
+	[yes],	[PKG_CHECK_MODULES([LIBIDN2], [libidn2],
+				   [AC_DEFINE([HAVE_LIBIDN2], [1], [Define if libidn2 was found])])],
+	[no],	[],
+	[*],	[AX_SAVE_FLAGS([libidn2])
+		 LIBIDN2_CFLAGS="-I$with_libidn2/include"
+		 LIBIDN2_LIBS="-L$with_libidn2/lib"
+		 CFLAGS="$CFLAGS $LIBIDN2_CFLAGS"
+		 LIBS="$LIBS $LIBIDN2_LIBS"
+		 AC_CHECK_HEADERS([idn2.h],
+				  [],
+				  [AC_MSG_ERROR([idn2.h not found])])
+		 AC_SEARCH_LIBS([idn2_to_ascii_lz], [idn2],
+				[LIBIDN2_LIBS="$LIBIDN2_LIBS $ac_cv_search_idn2_to_ascii_lz"
+				 AC_DEFINE([HAVE_LIBIDN2], [1], [Define if libidn2 was found])],
+				[AC_MSG_ERROR([libidn2 requested, but not found])])
+		AX_RESTORE_FLAGS([libidn2])])
+AC_SUBST([LIBIDN2_CFLAGS])
+AC_SUBST([LIBIDN2_LIBS])
+
+#
+# Check whether to build with cmocka unit testing framework
+#
+# [pairwise: --with-cmocka=detect, --with-cmocka=yes, --without-cmocka]
+AC_ARG_WITH([cmocka],
+	    [AS_HELP_STRING([--with-cmocka=detect],[enable CMocka based tests (default is detect)])],
+	    [],[with_cmocka=detect])
+
+AS_CASE([$with_cmocka],
+	[no],[],
+	[detect],[PKG_CHECK_MODULES([CMOCKA], [cmocka >= 1.1.3],
+				    [AC_DEFINE([HAVE_CMOCKA], [1], [Use CMocka])
+				     with_cmocka=yes],[with_cmocka=no])],
+	[yes],[PKG_CHECK_MODULES([CMOCKA], [cmocka >= 1.1.3],
+				 [AC_DEFINE([HAVE_CMOCKA], [1], [Use CMocka])])],
+	[AC_MSG_ERROR([Use PKG_CONFIG_PATH to specify path to CMocka library])]
+       )
+AC_SUBST([CMOCKA_CFLAGS])
+AC_SUBST([CMOCKA_LIBS])
+
+AM_CONDITIONAL([HAVE_CMOCKA], [test "$with_cmocka" = "yes"])
+
+#
+# Compile with jemalloc (either provided as package or wired in the system on FreeBSD and NetBSD)
+#
+# [pairwise: --with-jemalloc=detect, --with-jemalloc=yes, --without-jemalloc]
+AC_ARG_WITH([jemalloc],
+	    [AS_HELP_STRING([--with-jemalloc=detect],[enable jemalloc memory allocator (default is detect)])],
+	    [],[with_jemalloc=detect])
+
+AS_CASE([$with_jemalloc],
+	[no],[],
+	[yes],[AX_CHECK_JEMALLOC(
+		 [AC_DEFINE([HAVE_JEMALLOC], [1], [Define to 1 if jemalloc is available])],
+		 [AC_MSG_ERROR([jemalloc not found])])],
+	[AX_CHECK_JEMALLOC(
+	   [AC_DEFINE([HAVE_JEMALLOC], [1], [Define to 1 if jemalloc is available])
+	    with_jemalloc=yes],
+	   [AC_MSG_WARN([jemalloc not found; performance will be reduced])
+	    with_jemalloc=no])])
+
+AS_IF([test "$with_jemalloc" = "no"],
+      [AC_CHECK_FUNCS([malloc_size malloc_usable_size])])
+
+AM_CONDITIONAL([HAVE_JEMALLOC], [test "$with_jemalloc" = "yes"])
+
+#
+# was --with-tuning specified?
+#
+# [pairwise: --with-tuning=small, --without-tuning]
+AC_ARG_WITH([tuning],
+	    AS_HELP_STRING([--with-tuning=ARG],
+			   [Specify server tuning (default or small)]),
+	    [],[with_tuning=no])
+
+AS_CASE([$with_tuning],
+	[small],[AC_MSG_NOTICE(using small system tuning)],
+	[AC_DEFINE(TUNE_LARGE, 1, [Define to use default system tuning.])
+	 AC_MSG_NOTICE(using default system tuning)])
+
+#
+# was --enable-querytrace or --enable-singletrace specified?
+#
+# [pairwise: --enable-singletrace --enable-querytrace, --disable-singletrace --enable-querytrace, --disable-singletrace --disable-querytrace]
+AC_ARG_ENABLE([singletrace],
+	      AS_HELP_STRING([--enable-singletrace],
+			     [enable single-query trace logging
+			      [default=no]]),
+	      enable_singletrace="$enableval", enable_singletrace="no")
+
+AC_MSG_CHECKING([whether to enable single-query trace logging])
+case "$enable_singletrace" in
+yes)
+	enable_querytrace=yes
+	AC_MSG_RESULT(yes)
+	AC_DEFINE(WANT_SINGLETRACE, 1, [Define to enable single-query tracing.])
+	;;
+no)
+	AC_MSG_RESULT(no)
+	;;
+*)
+	AC_MSG_ERROR("--enable-singletrace requires yes or no")
+	;;
+esac
+
+# [pairwise: skip]
+AC_ARG_ENABLE(querytrace,
+	      AS_HELP_STRING([--enable-querytrace],
+			     [enable very verbose query trace logging
+				[default=no]]),
+	      enable_querytrace="$enableval",
+	      enable_querytrace="$enable_singletrace")
+
+AC_MSG_CHECKING([whether to enable query trace logging])
+case "$enable_querytrace" in
+yes)
+	AC_MSG_RESULT(yes)
+	AC_DEFINE(WANT_QUERYTRACE, 1, [Define to enable very verbose query trace logging.])
+	;;
+no)
+       AS_IF([test "$enable_singletrace" = "yes"],
+	     [AC_MSG_ERROR([--enable-singletrace requires --enable-querytrace])])
+	AC_MSG_RESULT(no)
+	;;
+*)
+	AC_MSG_ERROR("--enable-querytrace requires yes or no (not $enable_querytrace)")
+	;;
+esac
+
+#
+# Was --disable-auto-validation specified?
+#
+
+validation_default=auto
+
+# [pairwise: --enable-auto-validation, --disable-auto-validation]
+AC_ARG_ENABLE(auto-validation,
+	      AS_HELP_STRING([--enable-auto-validation],
+			     [turn on DNSSEC validation by default, using the IANA root key [default=yes]]),
+	      [:],[enable_auto_validation=yes])
+AS_IF([test "$enable_auto_validation" = "no"],[validation_default=yes])
+AC_DEFINE_UNQUOTED([VALIDATION_DEFAULT], ["$validation_default"], [the default value of dnssec-validation option])
+
+#
+#
+# Response policy rewriting using DNS Response Policy Service (DNSRPS)
+# interface.
+#
+# DNSRPS can be compiled into BIND everywhere with a reasonably
+# modern C compiler.  It is enabled on systems with dlopen() and librpz.so.
+#
+dnsrps_avail=yes
+AC_MSG_CHECKING([for librpz __attribute__s])
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[]],
+     [[
+       extern void f(char *p __attribute__((unused)), ...)
+       __attribute__((format(printf,1,2))) __attribute__((__noreturn__));
+     ]])],
+  [
+    librpz_have_attr=yes
+    AC_DEFINE([LIBRPZ_HAVE_ATTR], [1], [have __attribute__s used in librpz.h])
+    AC_MSG_RESULT([yes])
+  ],[
+    librpz_have_attr=no
+    AC_MSG_RESULT([no])
+  ])
+
+# DNSRPS is not included in pairwise testing as the librpz library is not
+# present in the relevant Docker image.
+#
+# [pairwise: skip]
+AC_ARG_ENABLE([dnsrps-dl],
+	      [AS_HELP_STRING([--enable-dnsrps-dl],
+			      [DNS Response Policy Service delayed link
+			       [default=$librpz_dl]])],
+	      [enable_librpz_dl="$enableval"], [enable_librpz_dl="$with_dlopen"])
+
+AS_IF([test "$enable_librpz_dl" = "yes" -a "$with_dlopen" = "no"],
+      [AC_MSG_ERROR([DNS Response Policy Service delayed link requires dlopen to be enabled])])
+
+# [pairwise: skip]
+AC_ARG_WITH([dnsrps-libname],
+	    [AS_HELP_STRING([--with-dnsrps-libname],
+			    [DNSRPS provider library name (librpz.so)])],
+	    [librpz_name="$withval"], [librpz_name="librpz.so"])
+
+# [pairwise: skip]
+AC_ARG_WITH([dnsrps-dir],
+	    [AS_HELP_STRING([--with-dnsrps-dir],
+			    [path to DNSRPS provider library])],
+	    [librpz_path="$withval/$librpz_name"], [librpz_path="$librpz_name"])
+AC_DEFINE_UNQUOTED([DNSRPS_LIBRPZ_PATH], ["$librpz_path"],
+		   [dnsrps $librpz_name])
+AS_IF([test "$enable_librpz_dl" = "yes"],
+      [
+	dnsrps_lib_open=2
+      ],[
+	dnsrps_lib_open=1
+	# Add librpz.so to linked libraries if we are not using dlopen()
+	AC_SEARCH_LIBS([librpz_client_create], [rpz], [],
+		[dnsrps_lib_open=0
+		 dnsrps_avail=no])
+      ])
+AC_DEFINE_UNQUOTED([DNSRPS_LIB_OPEN], [$dnsrps_lib_open],
+		   [0=no DNSRPS  1=static link  2=dlopen()])
+
+# [pairwise: skip]
+AC_ARG_ENABLE([dnsrps],
+	      AS_HELP_STRING([--enable-dnsrps],
+			     [enable DNS Response Policy Service API]),
+	      [enable_dnsrps=$enableval], [enable_dnsrps=no])
+
+AS_IF([test "$enable_dnsrps" != "no"],[
+	AS_IF([test "$dnsrps_avail" != "yes"],
+	      [AC_MSG_ERROR([dlopen and librpz.so needed for DNSRPS])])
+	AS_IF([test "$dnsrps_lib_open" = "0"],
+	      [AC_MSG_ERROR([dlopen and librpz.so needed for DNSRPS])])
+	AC_DEFINE([USE_DNSRPS], [1], [Enable DNS Response Policy Service API])
+      ])
+
+AC_CHECK_HEADERS([glob.h])
+
+#
+# Support for constructor and destructor attributes
+#
+AX_GCC_FUNC_ATTRIBUTE([constructor])
+AX_GCC_FUNC_ATTRIBUTE([destructor])
+
+#
+# Files to configure.  These are listed here because we used to
+# specify them as arguments to AC_OUTPUT.
+#
+
+# Top
+
+AC_CONFIG_FILES([Makefile])
+
+# Binaries
+
+AC_CONFIG_FILES([bin/Makefile
+		 bin/named/Makefile
+		 bin/rndc/Makefile
+		 bin/dig/Makefile
+		 bin/delv/Makefile
+		 bin/dnssec/Makefile
+		 bin/tools/Makefile
+		 bin/nsupdate/Makefile
+		 bin/check/Makefile
+		 bin/confgen/Makefile
+		 bin/plugins/Makefile])
+
+# Libraries
+
+AC_CONFIG_FILES([lib/Makefile
+		 lib/isc/Makefile
+		 lib/dns/Makefile
+		 lib/ns/Makefile
+		 lib/irs/Makefile
+		 lib/isccfg/Makefile
+		 lib/isccc/Makefile
+		 lib/bind9/Makefile])
+
+# Documentation
+
+AC_CONFIG_FILES([doc/Makefile
+		 doc/arm/Makefile
+		 doc/man/Makefile
+		 doc/misc/Makefile])
+
+# Unit Tests
+
+AC_CONFIG_FILES([lib/isc/tests/Makefile
+		 lib/dns/tests/Makefile
+		 lib/ns/tests/Makefile
+		 lib/irs/tests/Makefile
+		 lib/isccfg/tests/Makefile])
+
+AC_CONFIG_FILES([lib/unit-test-driver.sh],
+		[chmod +x lib/unit-test-driver.sh])
+
+# System Tests
+
+AC_CONFIG_FILES([bin/tests/Makefile
+		 bin/tests/system/Makefile
+		 bin/tests/system/conf.sh
+		 bin/tests/system/dyndb/driver/Makefile
+		 bin/tests/system/dlzexternal/driver/Makefile
+		 bin/tests/system/hooks/driver/Makefile])
+
+AC_CONFIG_FILES([bin/tests/system/ifconfig.sh],
+		[chmod +x bin/tests/system/ifconfig.sh])
+AC_CONFIG_FILES([bin/tests/system/run.sh],
+		[chmod +x bin/tests/system/run.sh])
+AC_CONFIG_FILES([bin/tests/system/start.sh],
+		[chmod +x bin/tests/system/start.sh])
+AC_CONFIG_FILES([bin/tests/system/stop.sh],
+		[chmod +x bin/tests/system/stop.sh])
+
+# Fuzz Tests
+
+AC_CONFIG_FILES([fuzz/Makefile])
+
+# Misc
+
+AC_CONFIG_FILES([util/check-make-install])
+
+#
+# Do it
+#
+
+AC_OUTPUT
+
+# [pairwise: --enable-full-report, --disable-full-report]
+AC_ARG_ENABLE(full-report,
+	      AS_HELP_STRING([--enable-full-report],
+			     [report values of all configure options]))
+
+report() {
+    echo "==============================================================================="
+    echo "Configuration summary:"
+    echo "-------------------------------------------------------------------------------"
+    echo "Optional features enabled:"
+    if test "yes" = "$with_jemalloc"; then
+	echo "    Memory allocator: jemalloc"
+    fi
+    if test "yes" = "$enable_full_report" -o "standard" = "$with_locktype"; then
+	echo "    Mutex lock type: $with_locktype"
+    fi
+    test "small" = "$with_tuning" && echo "    Small-system tuning (--with-tuning)"
+    test "no" = "$enable_dnstap" || \
+	    echo "    Allow 'dnstap' packet logging (--enable-dnstap)"
+    test -z "$MAXMINDDB_LIBS" || echo "    GeoIP2 access control (--enable-geoip)"
+    test -z "$GSSAPI_LIBS" || echo "    GSS-API (--with-gssapi)"
+
+    # these lines are only printed if run with --enable-full-report
+    if test "yes" = "$enable_full_report"; then
+	test -z "$LIBXML2_LIBS" || echo "    XML statistics (--with-libxml2)"
+	test -z "$JSON_C_LIBS" || echo "    JSON statistics (--with-json-c): $JSON_C_CFLAGS $JSON_C_LIBS"
+	test -z "$ZLIB_LIBS" || echo "    HTTP zlib compression (--with-zlib)"
+	test -z "$LMDB_LIBS" || echo "    LMDB database to store configuration for 'addzone' zones (--with-lmdb)"
+	test -z "$LIBIDN2_LIBS" || echo "    IDN support (--with-libidn2)"
+    fi
+
+    test "yes" = "$enable_dnsrps" && \
+	echo "    DNS Response Policy Service interface (--enable-dnsrps)"
+    test "yes" = "$enable_fixed_rrset" && \
+	echo "    Allow 'fixed' rrset-order (--enable-fixed-rrset)"
+    test "yes" = "$enable_querytrace" && \
+	echo "    Very verbose query trace logging (--enable-querytrace)"
+    test "yes" = "$enable_singletrace" && \
+	echo "    Single-query trace logging (--enable-singletrace)"
+    test -z "$HAVE_CMOCKA" || echo "    CMocka Unit Testing Framework (--with-cmocka)"
+
+    test "auto" = "$validation_default" && echo "    DNSSEC validation active by default (--enable-auto-validation)"
+
+    echo "-------------------------------------------------------------------------------"
+
+    echo "Features disabled or unavailable on this platform:"
+    if test "no" = "$with_jemalloc"; then
+      echo "    Memory allocator: system"
+      echo
+      echo "    +------------------------------------------+"
+      echo "    |             ==== WARNING ====            |"
+      echo "    |                                          |"
+      echo "    | This is NOT a recommended configuration. |"
+      echo "    | Using the system memory allocator causes |"
+      echo "    | reduced performance and increased memory |"
+      echo "    | fragmentation. Installing the jemalloc   |"
+      echo "    | memory allocator (version >= 4.0.0) is   |"
+      echo "    | strongly recommended.                    |"
+      echo "    +------------------------------------------+"
+      echo
+    fi
+    test "small" = "$with_tuning" || echo "    Small-system tuning (--with-tuning)"
+
+    test "no" = "$enable_dnstap" && \
+	    echo "    Allow 'dnstap' packet logging (--enable-dnstap)"
+    test -z "$MAXMINDDB_LIBS" && echo "    GeoIP2 access control (--enable-geoip)"
+    test -z "$GSSAPI_LIBS" && echo "    GSS-API (--with-gssapi)"
+
+    test "no" = "$enable_dnsrps" && \
+	echo "    DNS Response Policy Service interface (--enable-dnsrps)"
+
+    test "yes" = "$enable_fixed_rrset" || \
+	echo "    Allow 'fixed' rrset-order (--enable-fixed-rrset)"
+
+    test "yes" = "$validation_default" && echo "    DNSSEC validation requires configuration (--enable-auto-validation)"
+
+    test "yes" = "$enable_querytrace" || \
+	echo "    Very verbose query trace logging (--enable-querytrace)"
+    test "yes" = "$enable_singletrace" || \
+	echo "    Single-query trace logging (--enable-singletrace)"
+
+    test "no" = "$with_cmocka" && echo "    CMocka Unit Testing Framework (--with-cmocka)"
+
+    test -z "$LIBXML2_LIBS" && echo "    XML statistics (--with-libxml2)"
+    test -z "$JSON_C_LIBS" && echo "    JSON statistics (--with-json-c)"
+    test -z "$ZLIB_LIBS" && echo "    HTTP zlib compression (--with-zlib)"
+    test -z "$LMDB_LIBS" && echo "    LMDB database to store configuration for 'addzone' zones (--with-lmdb)"
+    test -z "$LIBIDN2_LIBS" && echo "    IDN support (--with-libidn2)"
+
+    echo "-------------------------------------------------------------------------------"
+    echo "Configured paths:"
+    echo "    prefix: $prefix"
+    echo "    sysconfdir: $sysconfdir"
+    echo "    localstatedir: $localstatedir"
+    echo "-------------------------------------------------------------------------------"
+    echo "Compiler: $CC"
+    AS_IF([test "$GCC" = "yes"],
+	  [$CC --version 2>&1 | sed 's/^/    /'],
+	  [AS_CASE([$host],
+		   [*-solaris*],[$CC -V 2>&1 | sed 's/^/    /'],
+		   [$CC --version 2>&1 | sed 's/^/    /'])])
+    echo "CFLAGS: $STD_CFLAGS $CFLAGS"
+    echo "CPPFLAGS: $STD_CPPFLAGS $CPPFLAGS"
+    echo "LDFLAGS: $LDFLAGS"
+
+    if test "X$ac_unrecognized_opts" != "X"; then
+	echo "-------------------------------------------------------------------------------"
+	echo "Unrecognized options:"
+	echo "    $ac_unrecognized_opts"
+    fi
+
+    if test "yes" != "$enable_full_report"; then
+	echo "-------------------------------------------------------------------------------"
+	echo "For more detail, use --enable-full-report."
+    fi
+    echo "==============================================================================="
+}
+
+if test "yes" != "$silent"; then
+	report
+fi
+
+# Tell Emacs to edit this file in shell mode.
+# Local Variables:
+# mode: sh
+# End:
