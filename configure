@@ -14788,9 +14788,9 @@ CC=$lt_save_CC
 
 
 
-if test "$enable_static" != "no" && test "$enable_developer" != "yes"; then :
-  as_fn_error $? "Static linking is not supported as it disables dlopen() and certain security features (e.g. RELRO, ASLR)" "$LINENO" 5
-fi
+#if test "$enable_static" != "no" && test "$enable_developer" != "yes"; then :
+#  as_fn_error $? "Static linking is not supported as it disables dlopen() and certain security features (e.g. RELRO, ASLR)" "$LINENO" 5
+#fi
 
 #
 # Set the default CFLAGS, CPPFLAGS, and LDFLAGS

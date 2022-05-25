@@ -11,6 +11,3 @@
 
 ::
 
-  zone <string> [ <class> ] {
-  	in-view <string>;
-  };

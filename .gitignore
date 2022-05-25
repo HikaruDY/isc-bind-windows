@@ -1,0 +1,52 @@
+# Generated
+
+*.exe
+*.dll
+*.lib
+*.so
+*.res
+*.manifest
+
+*.obj
+*.exp
+*.pdb
+*.cache
+
+#Generated (Linux)
+*.a
+*.o
+*.lo
+*.la
+.deps/
+.libs/
+Makefile
+config.status
+/stamp-h1
+/doc/man/*.[158]
+/bin/tests/system/conf.sh
+/bin/tests/system/ifconfig.sh
+/bin/tests/system/run.sh
+/bin/tests/system/start.sh
+/bin/tests/system/stop.sh
+/doc/doxygen/doxygen-input-filter
+/doc/misc/cfg_test*.c
+/lib/isc/netmgr/.dirstamp
+/lib/unit-test-driver.sh
+/util/check-make-install
+
+
+# VisualStudio
+*.suo
+*.vcxproj.user
+*.vcxproj.filters
+*.sdf
+*.opensdf
+*.ipch
+*.log
+*.tlog
+
+
+# OS related extra files
+Thumbs.db
+.DS_Store
+
